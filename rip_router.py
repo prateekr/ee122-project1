@@ -8,21 +8,28 @@ class RIPRouter (Entity):
     def __init__(self):
         # Add your code here!
         self.distance_vector = DistanceVector(self)
+        self.neighbor_ports = {}
         self.routing_packet = None
  
     def handle_rx (self, packet, port):
         # Add your code here!
         if type(packet) is DiscoveryPacket:
             if packet.is_link_up and not packet.src in self.distance_vector.get_neighbors(): #TODO: make sure to check what happens if router goes down after packet is sent.
-                if self.distance_vector.update_vector(packet.src, None, 0): self.send_dv_update(port)
+                if self.distance_vector.update_vector(packet.src, None, 0):
+                    self.neighbor_ports[packet.src] = port
+                    self.send_dv_update()
             elif not packet.is_link_up or packet.latency >= 100:
-                if self.distance_vector.delete_node(packet.src): self.send_dv_update(port)
+                if self.distance_vector.delete_node(packet.src):
+                    del(self.distance_vector[port])
+                    self.send_dv_update()
+                
         elif type(packet) is RoutingUpdate:
-            if self.distance_vector.update_from_packet(packet): self.send_dv_update(port) 
+            if self.distance_vector.update_from_packet(packet): self.send_dv_update() 
     
-    def send_dv_update(self, port):
-        self.routing_packet = self.distance_vector.get_routing_packet()
-        self.send(self.routing_packet, None, True)
+    def send_dv_update(self):
+        for neighbor in self.neighbor_ports.keys():
+            self.routing_packet = self.distance_vector.get_routing_packet(neighbor)
+            self.send(self.routing_packet, None, True)
             
 class DistanceVector ():
     def __init__(self, owner):
@@ -40,12 +47,8 @@ class DistanceVector ():
             
     def update_vector(self, dest, neighbor, dist_from_neighbor):
         update_required = (not dest in self.dest_via_nbors) or (dist_from_neighbor < self.distance_to(dest))
-        if update_required:
-            if neighbor == None:
-                self.dest_via_nbors[dest] = None
-            else:
-                if not dest in self.dest_via_nbors: self.dest_via_nbors[dest] = {}
-                self.dest_via_nbors[dest][neighbor] = dist_from_neighbor + 1
+        if not dest in self.dest_via_nbors: self.dest_via_nbors[dest] = {}
+        self.dest_via_nbors[dest][neighbor] = dist_from_neighbor
         return update_required
     
     def delete_node(self, node):
@@ -62,7 +65,7 @@ class DistanceVector ():
                     if oldDist != self.distance_to(dest): update_required = True
         return update_required      
     
-    def get_routing_packet(self):
+    def get_routing_packet(self,packet_dst):
         routing_packet = RoutingUpdate()
         for dest in self.dest_via_nbors.keys():
             routing_packet.add_destination(dest, self.distance_to(dest))
@@ -70,13 +73,12 @@ class DistanceVector ():
     
     def distance_to(self, dest):
         if not dest in self.dest_via_nbors: return float("inf")
-        if self.dest_via_nbors[dest] == None: return 1
-        return min(self.dest_via_nbors[dest].values())
+        return min(self.dest_via_nbors[dest].values()) + 1
     
     def get_neighbors(self):
         neighbors = []
         for key in self.dest_via_nbors.keys():
-            if self.dest_via_nbors[key] == None:
+            if None in self.dest_via_nbors[key]:
                 neighbors.append(key)
         return neighbors
         
