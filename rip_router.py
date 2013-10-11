@@ -13,22 +13,25 @@ class RIPRouter (Entity):
     def handle_rx (self, packet, port):
         # Add your code here!
         if type(packet) is DiscoveryPacket:
-            if packet.is_link_up and not packet.src in self.distance_vector.get_neighbors(): #TODO: make sure to check what happens if router goes down after packet is sent.
+            if packet.is_link_up and not packet.src in self.neighbor_ports.keys(): #TODO: make sure to check what happens if router goes down after packet is sent.
                 if self.distance_vector.update_vector(packet.src, None, 0):
                     self.neighbor_ports[packet.src] = port
                     self.send_dv_update()
             elif not packet.is_link_up or packet.latency >= 100:
-                if self.distance_vector.delete_node(packet.src):
+                if self.distance_vector.delete_link(packet.src):
                     del(self.neighbor_ports[packet.src])
                     self.send_dv_update()
-                
         elif type(packet) is RoutingUpdate:
             if self.distance_vector.update_from_packet(packet): self.send_dv_update() 
+        elif type(packet) is Ping:
+            if packet.dst in self.distance_vector.dest_via_nbors:
+                neighbor = self.distance_vector.closestNeighborTo(packet.dst)
+                self.send(packet, self.neighbor_ports[neighbor])
     
     def send_dv_update(self):
         for neighbor in self.neighbor_ports.keys():
             routing_packet = self.distance_vector.get_routing_packet(neighbor)
-            self.send(routing_packet, None, True)
+            if not isinstance(neighbor, HostEntity): self.send(routing_packet, self.neighbor_ports[neighbor])
             
 class DistanceVector ():
     def __init__(self, owner):
@@ -42,11 +45,10 @@ class DistanceVector ():
             if update_packet.src == dest or self.owner == dest:
                 continue
             elif not dest in update_packet.all_dests():
-                del(self.dest_via_nbors[dest][update_packet.src])
+                if update_packet.src in self.dest_via_nbors[dest]: del(self.dest_via_nbors[dest][update_packet.src])
                 if len(self.dest_via_nbors[dest].keys()) == 0: del(self.dest_via_nbors[dest])
-            elif not dest in self.dest_via_nbors:
+            elif not dest in self.dest_via_nbors or not update_packet.src in self.dest_via_nbors[dest]:
                 self.update_vector(dest, update_packet.src, update_packet.get_distance(dest))
-            self.update_vector(dest, update_packet.src, update_packet.get_distance(dest))
             update_required = update_required or oldClosestDist != self.distance_to(dest)
         return update_required
             
@@ -67,11 +69,11 @@ class DistanceVector ():
             oldDist = self.distance_to(dest)
             if dest == node and None in self.dest_via_nbors[dest]:
                 del(self.dest_via_nbors[dest][None])
-                if len(self.dest_via_nbors[dest].keys()) == 0: del(self.dest_via_nbors[dest])
                 update_required = True
             else:
                 if node in self.dest_via_nbors[dest]:
                     del(self.dest_via_nbors[dest][node])
+            if len(self.dest_via_nbors[dest].keys()) == 0: del(self.dest_via_nbors[dest])
             if oldDist != self.distance_to(dest): update_required = True
         return update_required      
     
@@ -79,8 +81,8 @@ class DistanceVector ():
         routing_packet = RoutingUpdate()
         routing_packet.src = self.owner
         for dest in self.dest_via_nbors.keys():
-            if dest not in self.owner.neighbor_ports.keys() and self.closestNeighborTo(dest) == packet_dst:
-                continue
+            if dest == packet_dst: continue
+            if dest not in self.owner.neighbor_ports.keys() and self.closestNeighborTo(dest) == packet_dst: continue
             routing_packet.add_destination(dest, self.distance_to(dest))
         return routing_packet
     
@@ -93,15 +95,10 @@ class DistanceVector ():
         if distance >= 100: return None
         closestNeighbors = {}
         for neighbor in self.dest_via_nbors[dest].keys():
-            if distance == self.dest_via_nbors[dest][neighbor]:
-                closestNeighbors[self.owner.neighbor_ports[neighbor]] = neighbor
-        return closestNeighbors[min(closestNeighbors.values())]
-    
-    
-    def get_neighbors(self):
-        neighbors = []
-        for key in self.dest_via_nbors.keys():
-            if None in self.dest_via_nbors[key]:
-                neighbors.append(key)
-        return neighbors
+            if distance == self.dest_via_nbors[dest][neighbor] + 1:
+                if neighbor == None:
+                    closestNeighbors[self.owner.neighbor_ports[dest]] = dest
+                else:
+                    closestNeighbors[self.owner.neighbor_ports[neighbor]] = neighbor
+        return closestNeighbors[min(closestNeighbors.keys())]
         
